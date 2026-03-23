@@ -15,13 +15,13 @@ import time
 import math
 import argparse
 import pickle
-from multiprocessing import Pool
+import shutil
 
-import requests
 import pyarrow.parquet as pq
 import rustbpe
 import tiktoken
 import torch
+from huggingface_hub import hf_hub_download
 
 # ---------------------------------------------------------------------------
 # Constants (fixed, do not modify)
@@ -38,7 +38,7 @@ EVAL_TOKENS = 40 * 524288  # number of tokens for val eval
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "autoresearch")
 DATA_DIR = os.path.join(CACHE_DIR, "data")
 TOKENIZER_DIR = os.path.join(CACHE_DIR, "tokenizer")
-BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
+HF_DATASET_NAME = "karpathy/climbmix-400b-shuffle"  # HuggingFace dataset name
 MAX_SHARD = 6542 # the last datashard is shard_06542.parquet
 VAL_SHARD = MAX_SHARD  # pinned validation shard (shard_06542)
 VAL_FILENAME = f"shard_{VAL_SHARD:05d}.parquet"
@@ -54,63 +54,59 @@ BOS_TOKEN = "<|reserved_0|>"
 # Data download
 # ---------------------------------------------------------------------------
 
-def download_single_shard(index):
-    """Download one parquet shard with retries. Returns True on success."""
-    filename = f"shard_{index:05d}.parquet"
-    filepath = os.path.join(DATA_DIR, filename)
-    if os.path.exists(filepath):
-        return True
-
-    url = f"{BASE_URL}/{filename}"
-    max_attempts = 5
-    for attempt in range(1, max_attempts + 1):
-        try:
-            response = requests.get(url, stream=True, timeout=30)
-            response.raise_for_status()
-            temp_path = filepath + ".tmp"
-            with open(temp_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
-            os.rename(temp_path, filepath)
-            print(f"  Downloaded {filename}")
-            return True
-        except (requests.RequestException, IOError) as e:
-            print(f"  Attempt {attempt}/{max_attempts} failed for {filename}: {e}")
-            for path in [filepath + ".tmp", filepath]:
-                if os.path.exists(path):
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
-            if attempt < max_attempts:
-                time.sleep(2 ** attempt)
-    return False
-
-
 def download_data(num_shards, download_workers=8):
-    """Download training shards + pinned validation shard."""
+    """
+    Download specified number of shards from HuggingFace.
+    Uses hf_hub_download which automatically caches in ~/.cache/huggingface/hub.
+    Then symlinks to DATA_DIR for compatibility with existing code.
+    """
     os.makedirs(DATA_DIR, exist_ok=True)
+
     num_train = min(num_shards, MAX_SHARD)
     ids = list(range(num_train))
     if VAL_SHARD not in ids:
         ids.append(VAL_SHARD)
 
-    # Count what's already downloaded
+    # Check what's already downloaded
     existing = sum(1 for i in ids if os.path.exists(os.path.join(DATA_DIR, f"shard_{i:05d}.parquet")))
     if existing == len(ids):
-        print(f"Data: all {len(ids)} shards already downloaded at {DATA_DIR}")
+        print(f"Data: all {len(ids)} shards already available at {DATA_DIR}")
         return
 
     needed = len(ids) - existing
-    print(f"Data: downloading {needed} shards ({existing} already exist)...")
+    print(f"Data: downloading {needed} shards from HuggingFace (using HF cache)")
+    print(f"Data: {existing} shards already exist")
 
-    workers = max(1, min(download_workers, needed))
-    with Pool(processes=workers) as pool:
-        results = pool.map(download_single_shard, ids)
+    # Download each shard using HF hub (with automatic caching)
+    for i, shard_id in enumerate(ids, 1):
+        filename = f"shard_{shard_id:05d}.parquet"
+        local_path = os.path.join(DATA_DIR, filename)
 
-    ok = sum(1 for r in results if r)
-    print(f"Data: {ok}/{len(ids)} shards ready at {DATA_DIR}")
+        if os.path.exists(local_path):
+            continue
+
+        try:
+            # Download from HF hub (automatically uses cache)
+            cached_path = hf_hub_download(
+                repo_id=HF_DATASET_NAME,
+                filename=filename,
+                repo_type="dataset",
+            )
+
+            # Create symlink or copy to DATA_DIR
+            if os.path.exists(cached_path):
+                try:
+                    os.symlink(cached_path, local_path)
+                except OSError:
+                    # If symlink fails, copy instead
+                    shutil.copy2(cached_path, local_path)
+                print(f"  [{i}/{len(ids)}] {filename} (from HF cache)")
+
+        except Exception as e:
+            print(f"  Failed to download {filename}: {e}")
+
+    final_count = sum(1 for i in ids if os.path.exists(os.path.join(DATA_DIR, f"shard_{i:05d}.parquet")))
+    print(f"Data: {final_count}/{len(ids)} shards ready at {DATA_DIR}")
 
 # ---------------------------------------------------------------------------
 # Tokenizer training
@@ -379,7 +375,7 @@ if __name__ == "__main__":
     print(f"Cache directory: {CACHE_DIR}")
     print()
 
-    # Step 1: Download data
+    # Step 1: Download data (uses HuggingFace datasets with automatic caching)
     download_data(num_shards, download_workers=args.download_workers)
     print()
 

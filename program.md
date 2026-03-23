@@ -20,7 +20,26 @@ Once you get confirmation, kick off the experimentation.
 
 ## Experimentation
 
-Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). You launch it simply as: `uv run train.py`.
+Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation).
+
+### Running Experiments
+
+Use the gflow MCP server to submit jobs that run in parallel across available GPUs.
+
+**CRITICAL - avoid git checkout conflicts**:
+- Jobs run in shared working directory
+- Extract file from git without changing working directory: `git show <commit>:train.py > train_<commit>.py`
+- Run the extracted file: `uv run train_<commit>.py > run_<commit>.log 2>&1`
+
+Command format:
+```bash
+git show <commit_hash>:train.py > train_<commit_hash>.py && uv run train_<commit_hash>.py > run_<commit_hash>.log 2>&1
+```
+
+**Retrieving results:**
+```bash
+grep "^val_bpb:\|^peak_vram_mb:" run_<commit_hash>.log
+```
 
 **What you CAN do:**
 - Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
@@ -89,19 +108,21 @@ d4e5f6g	0.000000	0.0	crash	double model width (OOM)
 
 ## The experiment loop
 
-The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autoresearch/mar5-gpu0`).
+The experiment runs on a dedicated branch (e.g. `autoresearch/mar23`).
 
 LOOP FOREVER:
 
 1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
+2. Tune `train.py` with an experimental idea by directly hacking the code
 3. git commit
-4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
-6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-7. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
-8. If val_bpb improved (lower), you "advance" the branch, keeping the git commit
-9. If val_bpb is equal or worse, you git reset back to where you started
+4. Submit job: `git show <commit>:train.py > train_<commit>.py && uv run train_<commit>.py > run_<commit>.log 2>&1`
+5. Wait for job to finish, then read results: `grep "^val_bpb:\|^peak_vram_mb:" run_<commit>.log`
+6. If grep output is empty, the run crashed. Read `tail -n 50 run_<commit>.log` to debug. If you can't fix it after a few attempts, give up
+7. Record results in `results.tsv` (do NOT commit this file, leave it untracked)
+8. If val_bpb improved (lower), advance the branch, keeping the git commit
+9. If val_bpb is equal or worse, git reset back to where you started
+
+**Parallel mode**: Generate 5-10 ideas, commit each, submit all jobs at once via gflow MCP, collect all results, keep the best.
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
 
