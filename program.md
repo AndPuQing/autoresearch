@@ -124,6 +124,11 @@ LOOP FOREVER:
 
 **Parallel mode**: Generate 5-10 ideas, commit each, submit all jobs at once via gflow MCP, collect all results, keep the best.
 
+**Cleanup**: After collecting results from each batch, delete the temporary training scripts and log files to keep the workspace clean:
+```bash
+rm -f train_*.py run_*.log
+```
+
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
 
 **Timeout**: Each experiment should take ~5 minutes total (+ a few seconds for startup and eval overhead). If a run exceeds 10 minutes, kill it and treat it as a failure (discard and revert).
